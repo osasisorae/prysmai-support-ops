@@ -42,10 +42,12 @@ from support_engine import (
     TOTAL_TURNS,
     TURN_DEFINITIONS,
     build_slot_models,
+    init_control_plane_session,
     normalize_case_id,
     normalize_model_config,
     resolve_case,
     run_support_turn_streaming,
+    serialize_control_plane_state,
 )
 
 app = FastAPI(title="PrysmAI Support Ops", version="1.0.0")
@@ -91,6 +93,11 @@ async def start_session(request: Request):
     case_data = next(case for case in PRESET_CASES if case["id"] == case_id)
 
     session_id = str(uuid.uuid4())[:8]
+    control_plane = init_control_plane_session(
+        case_data=case_data,
+        app_session_id=session_id,
+        slot_models=slot_models,
+    )
     sessions[session_id] = {
         "session_id": session_id,
         "case": case_data,
@@ -103,6 +110,7 @@ async def start_session(request: Request):
         "reviewer_history": [],
         "turn_records": [],
         "action_log": [],
+        "control_plane": control_plane,
     }
 
     return {
@@ -113,6 +121,7 @@ async def start_session(request: Request):
         "turns": {str(k): v for k, v in TURN_DEFINITIONS.items()},
         "model_config": model_config,
         "slot_models": slot_models,
+        "control_plane": serialize_control_plane_state(control_plane),
     }
 
 
@@ -141,6 +150,7 @@ async def stream_turn(session_id: str, turn_num: int):
             slot_models=session["slot_models"],
             agent_history=session["agent_history"],
             reviewer_history=session["reviewer_history"],
+            control_plane_state=session["control_plane"],
         ):
             event_type = chunk.get("type", "data")
             model = chunk.get("model")
@@ -155,6 +165,9 @@ async def stream_turn(session_id: str, turn_num: int):
 
             if event_type in {"tool_start", "tool_result", "tool_blocked"}:
                 turn_record["tools"].append(chunk)
+                session["action_log"].append({"turn": turn_num, **chunk})
+
+            if event_type in {"behavior_check", "code_scan", "governance_error"}:
                 session["action_log"].append({"turn": turn_num, **chunk})
 
             if event_type == "turn_end":
@@ -181,8 +194,10 @@ async def resolve_session(session_id: str):
         session_id=session_id,
         slot_models=session["slot_models"],
         turn_records=session["turn_records"],
+        control_plane_state=session["control_plane"],
     )
     session["status"] = "complete"
+    session["action_log"].append({"turn": "resolve", "type": "resolved"})
     return result
 
 
@@ -201,7 +216,17 @@ async def session_status(session_id: str):
         "slot_models": session["slot_models"],
         "actions_logged": len(session["action_log"]),
         "turns_completed": len(session["turn_records"]),
+        "control_plane": serialize_control_plane_state(session.get("control_plane")),
     }
+
+
+@app.get("/api/session/{session_id}/control-plane")
+async def session_control_plane(session_id: str):
+    session = sessions.get(session_id)
+    if not session:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+    return serialize_control_plane_state(session.get("control_plane"))
 
 
 if __name__ == "__main__":

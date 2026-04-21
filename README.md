@@ -7,6 +7,12 @@ It is designed to exercise the parts of Prysm that matter in production:
 - proxy-routed LLM traffic through the Python SDK
 - multi-model slot selection
 - per-turn tracing metadata via `prysm_context`
+- trace headers surfaced back into the app (`trace_id`, threat level, threat score)
+- MCP connection discovery and policy/resource reads
+- governance session lifecycle for the full case
+- explicit recording of tool calls, file reads/writes, and reviewer decisions
+- behavioral checks during the workflow
+- code scanning against a risky automation snippet
 - prompt injection blocking on hostile customer messages
 - PII-heavy customer contexts
 - risky operational actions like refunds and account changes
@@ -33,7 +39,18 @@ Each turn streams:
 - primary agent output
 - reviewer output
 - local mock tool activity
+- governance behavior-check events
+- code-scan events during the financial review turn
 - security-block events when Prysm stops a malicious request
+
+The UI also shows a control-plane pane with:
+
+- governance session ID
+- MCP transport details
+- active policy/resource snapshots
+- recorded traces
+- behavior checks
+- code-scan findings
 
 ## Run Locally
 

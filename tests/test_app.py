@@ -7,13 +7,38 @@ app = app_module.app
 client = TestClient(app)
 
 
+def _fake_control_plane():
+    return {
+        "enabled": True,
+        "mcp_url": "https://prysmai.example/api/mcp",
+        "connection": {
+            "server_url": "https://prysmai.example/api/mcp",
+            "transport": "streamable_http",
+        },
+        "policies": [{"id": "prompt-injection", "name": "Prompt Injection Defense"}],
+        "resources": [{"uri": "prysm://policies", "name": "Policies"}],
+        "governance_session_id": "gov-test-1",
+        "governance": object(),
+        "mcp": object(),
+        "trace_records": [],
+        "tool_calls": [],
+        "file_events": [],
+        "decisions": [],
+        "behavior_checks": [],
+        "code_scans": [],
+        "report": {},
+        "errors": [],
+    }
+
+
 def test_homepage_loads():
     response = client.get("/")
     assert response.status_code == 200, response.text
     assert "PrysmAI Support Ops" in response.text
 
 
-def test_start_session_and_status_flow():
+def test_start_session_and_status_flow(monkeypatch):
+    monkeypatch.setattr(app_module, "init_control_plane_session", lambda **kwargs: _fake_control_plane())
     payload = {
         "case_id": "chargeback-triangle",
         "model_config": {
@@ -29,6 +54,7 @@ def test_start_session_and_status_flow():
     assert data["status"] == "active"
     assert data["session_id"]
     assert data["slot_models"]["agent"]["id"] == payload["model_config"]["primary"]
+    assert data["control_plane"]["governance_session_id"] == "gov-test-1"
 
     status = client.get(f"/api/session/{data['session_id']}/status")
     assert status.status_code == 200, status.text
@@ -36,9 +62,12 @@ def test_start_session_and_status_flow():
     assert session["status"] == "active"
     assert session["current_turn"] == 0
     assert session["total_turns"] >= 1
+    assert session["control_plane"]["enabled"] is True
 
 
 def test_turn_stream_and_resolve_flow(monkeypatch):
+    monkeypatch.setattr(app_module, "init_control_plane_session", lambda **kwargs: _fake_control_plane())
+
     def fake_turn_stream(**kwargs):
         turn = kwargs["turn_num"]
         yield {"type": "turn_start", "turn": turn, "turn_label": "Intake Triage", "customer_message": "hello"}
@@ -49,6 +78,9 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
             "model": "agent",
             "content": "We can help.",
             "blocked": False,
+            "trace_id": "trace-agent-1",
+            "threat_level": "low",
+            "threat_score": 5,
         }
         yield {"type": "tool_result", "tool": "lookup_customer", "status": "success", "summary": "Loaded record."}
         yield {
@@ -63,7 +95,11 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
             "model": "reviewer",
             "content": "Decision: APPROVE",
             "blocked": False,
+            "trace_id": "trace-reviewer-1",
+            "threat_level": "low",
+            "threat_score": 4,
         }
+        yield {"type": "behavior_check", "turn": turn, "flags": 0, "recommendations": [], "violations": []}
         yield {
             "type": "turn_end",
             "turn": turn,
@@ -74,7 +110,26 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
         }
 
     def fake_resolve_case(**kwargs):
-        return {"content": "Case resolved safely.", "model": "resolver"}
+        return {
+            "content": "Case resolved safely.",
+            "model": "resolver",
+            "control_plane": {
+                "enabled": True,
+                "governance_session_id": "gov-test-1",
+                "trace_records": [{"trace_id": "trace-resolver-1"}],
+                "behavior_checks": [{"turn": 1, "flags": 0}],
+                "code_scans": [],
+                "tool_calls": [],
+                "file_events": [],
+                "decisions": [],
+                "policies": [],
+                "resources": [],
+                "report": {"behavior_score": 95, "summary": "Session completed cleanly."},
+                "errors": [],
+                "mcp_url": "https://prysmai.example/api/mcp",
+                "connection": {"server_url": "https://prysmai.example/api/mcp", "transport": "streamable_http"},
+            },
+        }
 
     monkeypatch.setattr(app_module, "run_support_turn_streaming", fake_turn_stream)
     monkeypatch.setattr(app_module, "resolve_case", fake_resolve_case)
@@ -94,9 +149,11 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
     assert status.status_code == 200, status.text
     status_data = status.json()
     assert status_data["current_turn"] == 1
-    assert status_data["actions_logged"] == 1
+    assert status_data["actions_logged"] == 2
     assert status_data["turns_completed"] == 1
+    assert status_data["control_plane"]["governance_session_id"] == "gov-test-1"
 
     resolve = client.post(f"/api/session/{session_id}/resolve")
     assert resolve.status_code == 200, resolve.text
     assert resolve.json()["content"] == "Case resolved safely."
+    assert resolve.json()["control_plane"]["report"]["behavior_score"] == 95

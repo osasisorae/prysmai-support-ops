@@ -7,6 +7,7 @@ const state = {
   blocks: 0,
   tools: 0,
   caseData: null,
+  controlPlane: null,
 };
 
 const caseSelect = document.getElementById("case-select");
@@ -23,6 +24,8 @@ const turnTitle = document.getElementById("turn-title");
 const attackBanner = document.getElementById("attack-banner");
 const actionLog = document.getElementById("action-log");
 const statusList = document.getElementById("status-list");
+const controlPlaneList = document.getElementById("control-plane-list");
+const controlPlaneLog = document.getElementById("control-plane-log");
 const agentOutput = document.getElementById("agent-output");
 const reviewerOutput = document.getElementById("reviewer-output");
 const agentStatus = document.getElementById("agent-status");
@@ -63,6 +66,29 @@ function updateStatusList() {
   `;
 }
 
+function renderControlPlane() {
+  const cp = state.controlPlane;
+  if (!cp) {
+    controlPlaneList.innerHTML = "<li>Control plane not started</li>";
+    return;
+  }
+  const lastTrace = cp.trace_records && cp.trace_records.length ? cp.trace_records[cp.trace_records.length - 1] : null;
+  controlPlaneList.innerHTML = `
+    <li>Governance: ${cp.governance_session_id || "not started"}</li>
+    <li>MCP: ${cp.connection?.transport || "n/a"} · ${cp.mcp_url || "unavailable"}</li>
+    <li>Policies: ${cp.policies?.length || 0}</li>
+    <li>Behavior checks: ${cp.behavior_checks?.length || 0}</li>
+    <li>Code scans: ${cp.code_scans?.length || 0}</li>
+    <li>Last trace: ${lastTrace?.trace_id || "none yet"}</li>
+  `;
+}
+
+function appendControlPlaneLine(text) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  controlPlaneLog.prepend(item);
+}
+
 function appendActionLine(text) {
   const item = document.createElement("li");
   item.textContent = text;
@@ -100,12 +126,15 @@ async function startSession() {
   state.currentTurn = 0;
   state.blocks = 0;
   state.tools = 0;
+  state.controlPlane = data.control_plane || null;
   updateMetrics();
   updateStatusList();
+  renderControlPlane();
 
   workspace.classList.remove("hidden");
   resolutionOutput.textContent = "Resolve the case to generate the final summary.";
   actionLog.innerHTML = "";
+  controlPlaneLog.innerHTML = "";
   nextTurnButton.classList.add("hidden");
   resolveButton.classList.add("hidden");
 
@@ -173,10 +202,29 @@ function runTurn(turnNumber) {
     state.tools += 1;
     updateMetrics();
     appendActionLine(`Turn ${turnNumber}: ${data.tool} → ${data.status}. ${data.summary}`);
+    appendControlPlaneLine(`Tool call recorded: ${data.tool} (${data.status}).`);
   });
 
   source.addEventListener("done", (event) => {
     const data = JSON.parse(event.data);
+    if (state.controlPlane) {
+      state.controlPlane.trace_records = state.controlPlane.trace_records || [];
+      state.controlPlane.trace_records.push({
+        turn: turnNumber,
+        slot: data.model,
+        model_id: data.model_id,
+        trace_id: data.trace_id,
+        threat_level: data.threat_level,
+        threat_score: data.threat_score,
+        blocked: Boolean(data.blocked),
+      });
+      renderControlPlane();
+      if (data.trace_id) {
+        appendControlPlaneLine(
+          `Trace ${data.trace_id} · ${data.model} · ${data.threat_level || "unknown"}${data.threat_score != null ? ` (${data.threat_score})` : ""}`,
+        );
+      }
+    }
     if (data.model === "agent") {
       agentStatus.textContent = data.blocked ? "Blocked" : "Done";
       agentOutput.textContent = data.content || agentOutput.textContent;
@@ -186,9 +234,42 @@ function runTurn(turnNumber) {
     }
   });
 
+  source.addEventListener("behavior_check", (event) => {
+    const data = JSON.parse(event.data);
+    if (state.controlPlane) {
+      state.controlPlane.behavior_checks = state.controlPlane.behavior_checks || [];
+      state.controlPlane.behavior_checks.push(data);
+      renderControlPlane();
+    }
+    appendControlPlaneLine(`Behavior check on turn ${data.turn}: ${data.flags} flag(s).`);
+  });
+
+  source.addEventListener("code_scan", (event) => {
+    const data = JSON.parse(event.data);
+    if (state.controlPlane) {
+      state.controlPlane.code_scans = state.controlPlane.code_scans || [];
+      state.controlPlane.code_scans.push(data);
+      renderControlPlane();
+    }
+    appendControlPlaneLine(
+      `Code scan ${data.file_path}: ${data.vulnerability_count} issue(s), max ${data.max_severity}, score ${data.threat_score}.`,
+    );
+  });
+
+  source.addEventListener("governance_error", (event) => {
+    const data = JSON.parse(event.data);
+    if (state.controlPlane) {
+      state.controlPlane.errors = state.controlPlane.errors || [];
+      state.controlPlane.errors.push(data.message);
+      renderControlPlane();
+    }
+    appendControlPlaneLine(`Governance error: ${data.message}`);
+  });
+
   source.addEventListener("turn_end", () => {
     source.close();
     updateStatusList();
+    renderControlPlane();
     if (turnNumber < state.totalTurns) {
       nextTurnButton.classList.remove("hidden");
     } else {
@@ -203,6 +284,13 @@ async function resolveCase() {
   const response = await fetch(`/api/session/${state.sessionId}/resolve`, { method: "POST" });
   const data = await response.json();
   resolutionOutput.textContent = data.content || JSON.stringify(data, null, 2);
+  if (data.control_plane) {
+    state.controlPlane = data.control_plane;
+    renderControlPlane();
+    if (data.control_plane.report?.summary) {
+      appendControlPlaneLine(`Governance report: ${data.control_plane.report.summary}`);
+    }
+  }
   resolveButton.disabled = false;
   resolveButton.textContent = "Resolve Case";
 }
@@ -220,6 +308,7 @@ fillModels(resolverModelSelect, bootstrap.default_model_config.resolver);
 state.caseData = bootstrap.cases[0];
 renderCaseSummary(state.caseData);
 updateStatusList();
+renderControlPlane();
 
 caseSelect.addEventListener("change", () => {
   state.caseData = bootstrap.cases.find((item) => item.id === caseSelect.value);
