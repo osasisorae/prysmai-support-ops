@@ -163,7 +163,7 @@ async def stream_turn(session_id: str, turn_num: int):
                     turn_record["reviewer"] = chunk.get("content", "")
                     turn_record["reviewer_blocked"] = bool(chunk.get("blocked"))
 
-            if event_type in {"tool_start", "tool_result", "tool_blocked"}:
+            if event_type in {"tool_start", "tool_result", "tool_blocked", "attachment_indexed"}:
                 turn_record["tools"].append(chunk)
                 session["action_log"].append({"turn": turn_num, **chunk})
 

@@ -26,6 +26,7 @@ const actionLog = document.getElementById("action-log");
 const statusList = document.getElementById("status-list");
 const controlPlaneList = document.getElementById("control-plane-list");
 const controlPlaneLog = document.getElementById("control-plane-log");
+const attachmentList = document.getElementById("attachment-list");
 const agentOutput = document.getElementById("agent-output");
 const reviewerOutput = document.getElementById("reviewer-output");
 const agentStatus = document.getElementById("agent-status");
@@ -51,6 +52,23 @@ function renderCaseSummary(caseData) {
   `;
 }
 
+function renderAttachments() {
+  if (!state.caseData?.attachments?.length) {
+    attachmentList.innerHTML = "<li>No attachments for this case.</li>";
+    return;
+  }
+  attachmentList.innerHTML = state.caseData.attachments.map((item) => `
+    <li>
+      <span class="attachment-name">${item.name}</span>
+      <div class="attachment-meta">
+        <span class="attachment-pill">${item.type}</span>
+        <span class="attachment-pill">${item.classification}</span>
+      </div>
+      <div>${item.summary}</div>
+    </li>
+  `).join("");
+}
+
 function updateMetrics() {
   document.getElementById("metric-blocks").textContent = String(state.blocks);
   document.getElementById("metric-tools").textContent = String(state.tools);
@@ -63,6 +81,7 @@ function updateStatusList() {
     <li>Case: ${state.caseData.title}</li>
     <li>Customer: ${state.caseData.customer_name}</li>
     <li>Turns completed: ${state.currentTurn}/${state.totalTurns}</li>
+    <li>Attachments: ${state.caseData.attachments?.length || 0}</li>
   `;
 }
 
@@ -77,21 +96,24 @@ function renderControlPlane() {
     <li>Governance: ${cp.governance_session_id || "not started"}</li>
     <li>MCP: ${cp.connection?.transport || "n/a"} · ${cp.mcp_url || "unavailable"}</li>
     <li>Policies: ${cp.policies?.length || 0}</li>
+    <li>Attachments indexed: ${cp.attachments_indexed?.length || 0}</li>
     <li>Behavior checks: ${cp.behavior_checks?.length || 0}</li>
     <li>Code scans: ${cp.code_scans?.length || 0}</li>
     <li>Last trace: ${lastTrace?.trace_id || "none yet"}</li>
   `;
 }
 
-function appendControlPlaneLine(text) {
+function appendControlPlaneLine(text, kind = "governance", label = kind) {
   const item = document.createElement("li");
-  item.textContent = text;
+  item.dataset.kind = kind;
+  item.innerHTML = `<span class="timeline-pill">${label}</span>${text}`;
   controlPlaneLog.prepend(item);
 }
 
-function appendActionLine(text) {
+function appendActionLine(text, kind = "tool", label = kind) {
   const item = document.createElement("li");
-  item.textContent = text;
+  item.dataset.kind = kind;
+  item.innerHTML = `<span class="timeline-pill">${label}</span>${text}`;
   actionLog.prepend(item);
 }
 
@@ -130,6 +152,7 @@ async function startSession() {
   updateMetrics();
   updateStatusList();
   renderControlPlane();
+  renderAttachments();
 
   workspace.classList.remove("hidden");
   resolutionOutput.textContent = "Resolve the case to generate the final summary.";
@@ -189,20 +212,31 @@ function runTurn(turnNumber) {
     const data = JSON.parse(event.data);
     state.blocks += 1;
     updateMetrics();
-    appendActionLine(`Turn ${turnNumber}: Prysm blocked ${data.model}.`);
+    appendActionLine(`Turn ${turnNumber}: Prysm blocked ${data.model}.`, "security", "blocked");
   });
 
   source.addEventListener("tool_start", (event) => {
     const data = JSON.parse(event.data);
-    appendActionLine(`Turn ${turnNumber}: starting tool ${data.tool}.`);
+    appendActionLine(`Turn ${turnNumber}: starting tool ${data.tool}.`, "tool", "tool");
   });
 
   source.addEventListener("tool_result", (event) => {
     const data = JSON.parse(event.data);
     state.tools += 1;
     updateMetrics();
-    appendActionLine(`Turn ${turnNumber}: ${data.tool} → ${data.status}. ${data.summary}`);
-    appendControlPlaneLine(`Tool call recorded: ${data.tool} (${data.status}).`);
+    appendActionLine(`Turn ${turnNumber}: ${data.tool} → ${data.status}. ${data.summary}`, "tool", "tool");
+    appendControlPlaneLine(`Tool call recorded: ${data.tool} (${data.status}).`, "tool", "tool");
+  });
+
+  source.addEventListener("attachment_indexed", (event) => {
+    const data = JSON.parse(event.data);
+    if (state.controlPlane) {
+      state.controlPlane.attachments_indexed = state.controlPlane.attachments_indexed || [];
+      state.controlPlane.attachments_indexed.push(data);
+      renderControlPlane();
+    }
+    appendActionLine(`Indexed attachment ${data.name} (${data.classification}).`, "attachment", "attachment");
+    appendControlPlaneLine(`Recorded attachment file read: ${data.path}.`, "attachment", "attachment");
   });
 
   source.addEventListener("done", (event) => {
@@ -222,6 +256,8 @@ function runTurn(turnNumber) {
       if (data.trace_id) {
         appendControlPlaneLine(
           `Trace ${data.trace_id} · ${data.model} · ${data.threat_level || "unknown"}${data.threat_score != null ? ` (${data.threat_score})` : ""}`,
+          "trace",
+          "trace",
         );
       }
     }
@@ -241,7 +277,7 @@ function runTurn(turnNumber) {
       state.controlPlane.behavior_checks.push(data);
       renderControlPlane();
     }
-    appendControlPlaneLine(`Behavior check on turn ${data.turn}: ${data.flags} flag(s).`);
+    appendControlPlaneLine(`Behavior check on turn ${data.turn}: ${data.flags} flag(s).`, "governance", "governance");
   });
 
   source.addEventListener("code_scan", (event) => {
@@ -253,6 +289,8 @@ function runTurn(turnNumber) {
     }
     appendControlPlaneLine(
       `Code scan ${data.file_path}: ${data.vulnerability_count} issue(s), max ${data.max_severity}, score ${data.threat_score}.`,
+      "scan",
+      "scan",
     );
   });
 
@@ -263,7 +301,7 @@ function runTurn(turnNumber) {
       state.controlPlane.errors.push(data.message);
       renderControlPlane();
     }
-    appendControlPlaneLine(`Governance error: ${data.message}`);
+    appendControlPlaneLine(`Governance error: ${data.message}`, "security", "error");
   });
 
   source.addEventListener("turn_end", () => {
@@ -288,7 +326,7 @@ async function resolveCase() {
     state.controlPlane = data.control_plane;
     renderControlPlane();
     if (data.control_plane.report?.summary) {
-      appendControlPlaneLine(`Governance report: ${data.control_plane.report.summary}`);
+      appendControlPlaneLine(`Governance report: ${data.control_plane.report.summary}`, "governance", "report");
     }
   }
   resolveButton.disabled = false;
@@ -309,11 +347,13 @@ state.caseData = bootstrap.cases[0];
 renderCaseSummary(state.caseData);
 updateStatusList();
 renderControlPlane();
+renderAttachments();
 
 caseSelect.addEventListener("change", () => {
   state.caseData = bootstrap.cases.find((item) => item.id === caseSelect.value);
   renderCaseSummary(state.caseData);
   updateStatusList();
+  renderAttachments();
 });
 
 startButton.addEventListener("click", startSession);

@@ -15,6 +15,7 @@ It is designed to exercise the parts of Prysm that matter in production:
 - code scanning against a risky automation snippet
 - prompt injection blocking on hostile customer messages
 - PII-heavy customer contexts
+- attachment ingestion with operator-visible evidence
 - risky operational actions like refunds and account changes
 - human-review style second-model oversight
 - end-of-case resolver summary
@@ -39,6 +40,7 @@ Each turn streams:
 - primary agent output
 - reviewer output
 - local mock tool activity
+- attachment indexing events for uploaded case artifacts
 - governance behavior-check events
 - code-scan events during the financial review turn
 - security-block events when Prysm stops a malicious request

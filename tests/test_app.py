@@ -23,6 +23,7 @@ def _fake_control_plane():
         "trace_records": [],
         "tool_calls": [],
         "file_events": [],
+        "attachments_indexed": [],
         "decisions": [],
         "behavior_checks": [],
         "code_scans": [],
@@ -55,6 +56,7 @@ def test_start_session_and_status_flow(monkeypatch):
     assert data["session_id"]
     assert data["slot_models"]["agent"]["id"] == payload["model_config"]["primary"]
     assert data["control_plane"]["governance_session_id"] == "gov-test-1"
+    assert len(data["case"]["attachments"]) >= 1
 
     status = client.get(f"/api/session/{data['session_id']}/status")
     assert status.status_code == 200, status.text
@@ -64,6 +66,10 @@ def test_start_session_and_status_flow(monkeypatch):
     assert session["total_turns"] >= 1
     assert session["control_plane"]["enabled"] is True
 
+    control_plane = client.get(f"/api/session/{data['session_id']}/control-plane")
+    assert control_plane.status_code == 200, control_plane.text
+    assert control_plane.json()["governance_session_id"] == "gov-test-1"
+
 
 def test_turn_stream_and_resolve_flow(monkeypatch):
     monkeypatch.setattr(app_module, "init_control_plane_session", lambda **kwargs: _fake_control_plane())
@@ -71,6 +77,16 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
     def fake_turn_stream(**kwargs):
         turn = kwargs["turn_num"]
         yield {"type": "turn_start", "turn": turn, "turn_label": "Intake Triage", "customer_message": "hello"}
+        yield {
+            "type": "attachment_indexed",
+            "turn": turn,
+            "id": "invoice-diff",
+            "name": "invoice-diff.csv",
+            "attachment_type": "billing_export",
+            "classification": "internal-finance",
+            "summary": "Loaded invoice attachment.",
+            "path": "attachments/invoice-diff.csv",
+        }
         yield {"type": "model_start", "model": "agent", "model_id": "llama-3.3-70b-versatile", "model_name": "Llama 3.3 70B"}
         yield {"type": "token", "model": "agent", "content": "We can help."}
         yield {
@@ -121,6 +137,7 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
                 "code_scans": [],
                 "tool_calls": [],
                 "file_events": [],
+                "attachments_indexed": [{"name": "invoice-diff.csv"}],
                 "decisions": [],
                 "policies": [],
                 "resources": [],
@@ -149,7 +166,7 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
     assert status.status_code == 200, status.text
     status_data = status.json()
     assert status_data["current_turn"] == 1
-    assert status_data["actions_logged"] == 2
+    assert status_data["actions_logged"] == 3
     assert status_data["turns_completed"] == 1
     assert status_data["control_plane"]["governance_session_id"] == "gov-test-1"
 
