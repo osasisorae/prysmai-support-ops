@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrysmAI Support Ops</title>
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <div class="shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">PrysmAI Example App</p>
+                <h1>Support Ops Control Room</h1>
+                <p class="lede">
+                    Run a live support case through a primary agent, a reviewer, risky operational tools,
+                    and four adversarial customer turns routed through Prysm.
+                </p>
+            </div>
+            <div class="hero-card">
+                <div class="metric">
+                    <span class="metric-label">Turns</span>
+                    <span class="metric-value" id="metric-turns">{{ bootstrap.total_turns }}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Security Blocks</span>
+                    <span class="metric-value" id="metric-blocks">0</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Tools Logged</span>
+                    <span class="metric-value" id="metric-tools">0</span>
+                </div>
+            </div>
+        </header>
+
+        <section class="config">
+            <div class="panel">
+                <h2>Case</h2>
+                <select id="case-select"></select>
+                <div id="case-summary" class="case-summary"></div>
+            </div>
+            <div class="panel">
+                <h2>Model Slots</h2>
+                <label>Primary Agent</label>
+                <select id="primary-model"></select>
+                <label>Reviewer</label>
+                <select id="reviewer-model"></select>
+                <label>Resolver</label>
+                <select id="resolver-model"></select>
+                <button id="start-button" class="primary-button">Start Case</button>
+            </div>
+        </section>
+
+        <section class="workspace hidden" id="workspace">
+            <div class="workspace-header">
+                <div>
+                    <p class="eyebrow">Live Session</p>
+                    <h2 id="turn-title">Turn 1</h2>
+                    <p id="attack-banner" class="attack-banner hidden"></p>
+                </div>
+                <div class="actions">
+                    <button id="next-turn-button" class="secondary-button hidden">Next Turn</button>
+                    <button id="resolve-button" class="primary-button hidden">Resolve Case</button>
+                </div>
+            </div>
+
+            <div class="grid">
+                <article class="panel large">
+                    <h3>Customer Thread</h3>
+                    <p id="customer-message" class="customer-message">Start a case to load the first customer turn.</p>
+                </article>
+                <article class="panel">
+                    <h3>Case Status</h3>
+                    <ul id="status-list" class="status-list"></ul>
+                </article>
+                <article class="panel stream-panel">
+                    <h3 id="primary-heading">Primary Agent</h3>
+                    <p id="agent-status" class="stream-status">Waiting</p>
+                    <pre id="agent-output" class="stream-output"></pre>
+                </article>
+                <article class="panel stream-panel">
+                    <h3 id="reviewer-heading">Reviewer</h3>
+                    <p id="reviewer-status" class="stream-status">Waiting</p>
+                    <pre id="reviewer-output" class="stream-output"></pre>
+                </article>
+                <article class="panel">
+                    <h3>Action Log</h3>
+                    <ul id="action-log" class="timeline"></ul>
+                </article>
+                <article class="panel">
+                    <h3>Resolution</h3>
+                    <pre id="resolution-output" class="stream-output muted">Resolve the case to generate the final summary.</pre>
+                </article>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        window.SUPPORT_OPS_BOOTSTRAP = {{ bootstrap | tojson }};
+    </script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
