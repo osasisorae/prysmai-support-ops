@@ -40,6 +40,20 @@ def test_homepage_loads():
 
 def test_start_session_and_status_flow(monkeypatch):
     monkeypatch.setattr(app_module, "init_control_plane_session", lambda **kwargs: _fake_control_plane())
+    monkeypatch.setattr(
+        app_module,
+        "get_session_attribution",
+        lambda control_plane: {
+            "available": False,
+            "source": "unavailable",
+            "reason": "Set PRYSM_USER_BEARER_TOKEN to fetch live hallucination attribution from Prysm.",
+            "trace_ids": [],
+            "traces": [],
+            "spans": [],
+            "attribution_counts": {"clean": 0, "base_llm": 0, "guardrail": 0},
+            "trace_inventory": {},
+        },
+    )
     payload = {
         "case_id": "chargeback-triangle",
         "model_config": {
@@ -70,9 +84,29 @@ def test_start_session_and_status_flow(monkeypatch):
     assert control_plane.status_code == 200, control_plane.text
     assert control_plane.json()["governance_session_id"] == "gov-test-1"
 
+    attribution = client.get(f"/api/session/{data['session_id']}/attribution")
+    assert attribution.status_code == 200, attribution.text
+    assert attribution.json()["available"] is False
+
 
 def test_turn_stream_and_resolve_flow(monkeypatch):
     monkeypatch.setattr(app_module, "init_control_plane_session", lambda **kwargs: _fake_control_plane())
+    monkeypatch.setattr(
+        app_module,
+        "get_session_attribution",
+        lambda control_plane: {
+            "available": True,
+            "source": "live",
+            "reason": "",
+            "trace_ids": ["trace-agent-1", "trace-reviewer-1"],
+            "traces": [],
+            "spans": [{"trace_id": "trace-agent-1", "attribution": "clean", "guardrail_modified": False, "model": "llama-3.3-70b-versatile"}],
+            "attribution_counts": {"clean": 1, "base_llm": 0, "guardrail": 0},
+            "trace_inventory": {
+                "trace-agent-1": [{"turn": 1, "slot": "agent", "model_id": "llama-3.3-70b-versatile"}],
+            },
+        },
+    )
 
     def fake_turn_stream(**kwargs):
         turn = kwargs["turn_num"]
@@ -174,3 +208,7 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
     assert resolve.status_code == 200, resolve.text
     assert resolve.json()["content"] == "Case resolved safely."
     assert resolve.json()["control_plane"]["report"]["behavior_score"] == 95
+
+    attribution = client.get(f"/api/session/{session_id}/attribution")
+    assert attribution.status_code == 200, attribution.text
+    assert attribution.json()["attribution_counts"]["clean"] == 1

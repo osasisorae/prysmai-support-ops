@@ -11,8 +11,12 @@ import os
 import random
 import re
 import time
+from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any, Generator, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+import json
 
 try:
     from dotenv import load_dotenv
@@ -775,6 +779,117 @@ def serialize_control_plane_state(state: Optional[dict[str, Any]]) -> dict[str, 
         "report": dict(state.get("report", {})),
         "errors": list(state.get("errors", [])),
     }
+
+
+def _derive_backend_base_url() -> str:
+    base = os.getenv("PRYSM_BACKEND_URL", "").strip()
+    if base:
+        return base.rstrip("/")
+
+    proxy_base = os.getenv("PRYSM_BASE_URL", "https://prysmai.io/api/v1").rstrip("/")
+    for suffix in ("/api/v1", "/v1", "/api"):
+        if proxy_base.endswith(suffix):
+            return proxy_base[: -len(suffix)]
+    return proxy_base
+
+
+def _fetch_live_trace_attribution(trace_id: str) -> dict[str, Any]:
+    token = os.getenv("PRYSM_USER_BEARER_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("PRYSM_USER_BEARER_TOKEN is not set")
+
+    base = _derive_backend_base_url()
+    req = Request(
+        f"{base}/traces/{trace_id}/attribution",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(req, timeout=15) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")[:300]
+        raise RuntimeError(f"trace attribution request failed with HTTP {exc.code}: {body}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"trace attribution request failed: {exc.reason}") from exc
+
+    return json.loads(payload)
+
+
+def get_session_attribution(control_plane_state: Optional[dict[str, Any]]) -> dict[str, Any]:
+    control_plane_state = control_plane_state or {}
+    trace_records = list(control_plane_state.get("trace_records", []))
+    unique_trace_ids = []
+    seen = set()
+    for record in trace_records:
+        trace_id = record.get("trace_id")
+        if trace_id and trace_id not in seen:
+            seen.add(trace_id)
+            unique_trace_ids.append(trace_id)
+
+    result = {
+        "available": False,
+        "source": "unavailable",
+        "reason": "",
+        "trace_ids": unique_trace_ids,
+        "traces": [],
+        "spans": [],
+        "attribution_counts": {"clean": 0, "base_llm": 0, "guardrail": 0},
+        "trace_inventory": defaultdict(list),
+    }
+
+    for record in trace_records:
+        trace_id = record.get("trace_id") or "missing-trace-id"
+        result["trace_inventory"][trace_id].append(
+            {
+                "turn": record.get("turn"),
+                "slot": record.get("slot"),
+                "model_id": record.get("model_id"),
+                "threat_level": record.get("threat_level"),
+                "threat_score": record.get("threat_score"),
+                "blocked": record.get("blocked", False),
+            }
+        )
+
+    if not unique_trace_ids:
+        result["reason"] = "No trace IDs have been recorded for this session yet."
+        result["trace_inventory"] = dict(result["trace_inventory"])
+        return result
+
+    token = os.getenv("PRYSM_USER_BEARER_TOKEN", "").strip()
+    if not token:
+        result["reason"] = "Set PRYSM_USER_BEARER_TOKEN to fetch live hallucination attribution from Prysm."
+        result["trace_inventory"] = dict(result["trace_inventory"])
+        return result
+
+    traces = []
+    spans = []
+    counts = {"clean": 0, "base_llm": 0, "guardrail": 0}
+    errors = []
+    for trace_id in unique_trace_ids:
+        try:
+            payload = _fetch_live_trace_attribution(trace_id)
+            traces.append(payload)
+            spans.extend(payload.get("spans", []))
+            for key, value in payload.get("attribution_counts", {}).items():
+                counts[key] = counts.get(key, 0) + int(value or 0)
+        except Exception as exc:
+            errors.append(f"{trace_id}: {exc}")
+
+    result["trace_inventory"] = dict(result["trace_inventory"])
+    result["traces"] = traces
+    result["spans"] = spans
+    result["attribution_counts"] = counts
+
+    if traces:
+        result["available"] = True
+        result["source"] = "live"
+        result["reason"] = ""
+    else:
+        result["reason"] = "; ".join(errors) if errors else "Live attribution did not return any spans."
+    return result
 
 
 def ingest_case_attachments(

@@ -111,6 +111,26 @@ h3 {
     border-bottom: 0;
 }
 
+.metric-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.metric-chip {
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: rgba(8, 17, 31, 0.44);
+}
+
+.metric-chip strong {
+    display: block;
+    font-size: 1.4rem;
+    color: var(--text);
+}
+
 .metric-label {
     font-size: 12px;
     letter-spacing: 0.12em;

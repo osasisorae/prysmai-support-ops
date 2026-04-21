@@ -8,6 +8,7 @@ const state = {
   tools: 0,
   caseData: null,
   controlPlane: null,
+  attribution: null,
 };
 
 const caseSelect = document.getElementById("case-select");
@@ -32,6 +33,9 @@ const reviewerOutput = document.getElementById("reviewer-output");
 const agentStatus = document.getElementById("agent-status");
 const reviewerStatus = document.getElementById("reviewer-status");
 const resolutionOutput = document.getElementById("resolution-output");
+const attributionStatus = document.getElementById("attribution-status");
+const attributionCounts = document.getElementById("attribution-counts");
+const attributionList = document.getElementById("attribution-list");
 
 function fillModels(select, selectedId) {
   bootstrap.model_catalog.forEach((model) => {
@@ -103,6 +107,46 @@ function renderControlPlane() {
   `;
 }
 
+function renderAttribution() {
+  const data = state.attribution;
+  if (!data) {
+    attributionStatus.textContent = "No attribution data loaded yet.";
+    attributionCounts.innerHTML = "";
+    attributionList.innerHTML = "";
+    return;
+  }
+
+  if (!data.available) {
+    attributionStatus.textContent = data.reason || "Live attribution is not available.";
+  } else {
+    attributionStatus.textContent = `Source: ${data.source} · ${data.trace_ids.length} trace(s) with live attribution.`;
+  }
+
+  attributionCounts.innerHTML = `
+    <div class="metric-chip"><span class="metric-label">Clean</span><strong>${data.attribution_counts?.clean || 0}</strong></div>
+    <div class="metric-chip"><span class="metric-label">Base LLM</span><strong>${data.attribution_counts?.base_llm || 0}</strong></div>
+    <div class="metric-chip"><span class="metric-label">Guardrail</span><strong>${data.attribution_counts?.guardrail || 0}</strong></div>
+  `;
+
+  const liveRows = (data.spans || []).map((span) => `
+    <li data-kind="trace">
+      <span class="timeline-pill">${span.attribution}</span>
+      ${span.model || "model"} · trace ${span.trace_id} · ${span.guardrail_modified ? "modified" : "unchanged"}
+    </li>
+  `);
+
+  const inventoryRows = Object.entries(data.trace_inventory || {}).flatMap(([traceId, items]) =>
+    items.map((item) => `
+      <li data-kind="governance">
+        <span class="timeline-pill">trace</span>
+        ${traceId} · turn ${item.turn} · ${item.slot} · ${item.model_id} · ${item.threat_level || "unknown"}${item.threat_score != null ? ` (${item.threat_score})` : ""}
+      </li>
+    `),
+  );
+
+  attributionList.innerHTML = (liveRows.length ? liveRows : inventoryRows).join("") || "<li>No trace attribution rows yet.</li>";
+}
+
 function appendControlPlaneLine(text, kind = "governance", label = kind) {
   const item = document.createElement("li");
   item.dataset.kind = kind;
@@ -122,6 +166,27 @@ function resetOutputs() {
   reviewerOutput.textContent = "";
   agentStatus.textContent = "Waiting";
   reviewerStatus.textContent = "Waiting";
+}
+
+async function refreshAttribution() {
+  if (!state.sessionId) return;
+  try {
+    const response = await fetch(`/api/session/${state.sessionId}/attribution`);
+    const data = await response.json();
+    state.attribution = data;
+  } catch (error) {
+    state.attribution = {
+      available: false,
+      source: "error",
+      reason: `Failed to load attribution: ${error}`,
+      trace_ids: [],
+      traces: [],
+      spans: [],
+      attribution_counts: { clean: 0, base_llm: 0, guardrail: 0 },
+      trace_inventory: {},
+    };
+  }
+  renderAttribution();
 }
 
 async function startSession() {
@@ -149,10 +214,12 @@ async function startSession() {
   state.blocks = 0;
   state.tools = 0;
   state.controlPlane = data.control_plane || null;
+  state.attribution = null;
   updateMetrics();
   updateStatusList();
   renderControlPlane();
   renderAttachments();
+  renderAttribution();
 
   workspace.classList.remove("hidden");
   resolutionOutput.textContent = "Resolve the case to generate the final summary.";
@@ -308,6 +375,7 @@ function runTurn(turnNumber) {
     source.close();
     updateStatusList();
     renderControlPlane();
+    refreshAttribution();
     if (turnNumber < state.totalTurns) {
       nextTurnButton.classList.remove("hidden");
     } else {
@@ -329,6 +397,7 @@ async function resolveCase() {
       appendControlPlaneLine(`Governance report: ${data.control_plane.report.summary}`, "governance", "report");
     }
   }
+  await refreshAttribution();
   resolveButton.disabled = false;
   resolveButton.textContent = "Resolve Case";
 }
@@ -348,6 +417,7 @@ renderCaseSummary(state.caseData);
 updateStatusList();
 renderControlPlane();
 renderAttachments();
+renderAttribution();
 
 caseSelect.addEventListener("change", () => {
   state.caseData = bootstrap.cases.find((item) => item.id === caseSelect.value);

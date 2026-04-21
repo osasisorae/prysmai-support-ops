@@ -75,8 +75,12 @@ Required:
 Optional:
 
 - `PRYSM_BASE_URL`
+- `PRYSM_BACKEND_URL`
+- `PRYSM_USER_BEARER_TOKEN`
 
 The app uses a placeholder key if none is set so the module can still import during local testing, but live model calls require a real Prysm key.
+
+If `PRYSM_USER_BEARER_TOKEN` is set, the app will also call Prysm's live `/traces/{trace_id}/attribution` endpoint for the traces generated during the session. Without it, the Attribution View still shows the recorded trace inventory but explains that live attribution is unavailable.
 
 ## Tests
 

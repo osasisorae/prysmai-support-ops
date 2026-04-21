@@ -42,6 +42,7 @@ from support_engine import (
     TOTAL_TURNS,
     TURN_DEFINITIONS,
     build_slot_models,
+    get_session_attribution,
     init_control_plane_session,
     normalize_case_id,
     normalize_model_config,
@@ -227,6 +228,15 @@ async def session_control_plane(session_id: str):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
     return serialize_control_plane_state(session.get("control_plane"))
+
+
+@app.get("/api/session/{session_id}/attribution")
+async def session_attribution(session_id: str):
+    session = sessions.get(session_id)
+    if not session:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+    return get_session_attribution(session.get("control_plane"))
 
 
 if __name__ == "__main__":
