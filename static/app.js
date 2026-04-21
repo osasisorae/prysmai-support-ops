@@ -9,6 +9,8 @@ const state = {
   caseData: null,
   controlPlane: null,
   attribution: null,
+  approval: null,
+  drilldown: null,
 };
 
 const caseSelect = document.getElementById("case-select");
@@ -36,6 +38,13 @@ const resolutionOutput = document.getElementById("resolution-output");
 const attributionStatus = document.getElementById("attribution-status");
 const attributionCounts = document.getElementById("attribution-counts");
 const attributionList = document.getElementById("attribution-list");
+const policyList = document.getElementById("policy-list");
+const resourceList = document.getElementById("resource-list");
+const drilldownOutput = document.getElementById("drilldown-output");
+const approvalStatus = document.getElementById("approval-status");
+const approvalNote = document.getElementById("approval-note");
+const approveButton = document.getElementById("approve-button");
+const denyButton = document.getElementById("deny-button");
 
 function fillModels(select, selectedId) {
   bootstrap.model_catalog.forEach((model) => {
@@ -105,6 +114,105 @@ function renderControlPlane() {
     <li>Code scans: ${cp.code_scans?.length || 0}</li>
     <li>Last trace: ${lastTrace?.trace_id || "none yet"}</li>
   `;
+}
+
+function setDrilldown(kind, key, payload) {
+  state.drilldown = { kind, key, payload };
+  drilldownOutput.textContent = JSON.stringify(payload, null, 2);
+}
+
+function renderPolicyResourceDrilldown() {
+  const cp = state.controlPlane;
+  if (!cp) {
+    policyList.innerHTML = "<li>No policy data available.</li>";
+    resourceList.innerHTML = "<li>No resource data available.</li>";
+    if (!state.drilldown) {
+      drilldownOutput.textContent = "Control plane not started.";
+    }
+    return;
+  }
+
+  const policies = cp.policies || [];
+  const resources = cp.resources || [];
+  const resourceSnapshots = cp.resource_snapshots || {};
+
+  policyList.innerHTML = policies.length
+    ? policies.map((policy, index) => `
+        <li data-kind="governance">
+          <button type="button" class="secondary-button" data-drilldown-kind="policy" data-drilldown-key="${index}">
+            ${policy.name || policy.id || `Policy ${index + 1}`}
+          </button>
+        </li>
+      `).join("")
+    : "<li>No active policies returned.</li>";
+
+  resourceList.innerHTML = resources.length
+    ? resources.map((resource, index) => `
+        <li data-kind="trace">
+          <button type="button" class="secondary-button" data-drilldown-kind="resource" data-drilldown-key="${index}">
+            ${resource.name || resource.uri || `Resource ${index + 1}`}
+          </button>
+        </li>
+      `).join("")
+    : "<li>No control-plane resources returned.</li>";
+
+  if (!state.drilldown) {
+    const initialPayload =
+      resourceSnapshots.session_status ||
+      policies[0] ||
+      resources[0] ||
+      { message: "Select a policy or resource entry to inspect details." };
+    setDrilldown("resource", "initial", initialPayload);
+  }
+
+  document.querySelectorAll("[data-drilldown-kind]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = button.dataset.drilldownKind;
+      const key = Number(button.dataset.drilldownKey);
+      if (kind === "policy") {
+        setDrilldown("policy", key, policies[key]);
+      } else {
+        const resource = resources[key];
+        const snapshot =
+          resourceSnapshots[resource?.uri?.replace("prysm://", "").replaceAll("/", "_")] ||
+          resourceSnapshots.session_status ||
+          resourceSnapshots.session_report ||
+          resource;
+        setDrilldown("resource", key, { resource, snapshot });
+      }
+    });
+  });
+}
+
+function renderApproval() {
+  const approval = state.approval;
+  if (!approval) {
+    approvalStatus.textContent = "No approval required yet.";
+    approveButton.classList.add("hidden");
+    denyButton.classList.add("hidden");
+    return;
+  }
+
+  const turnLabel = approval.turn ? `turn ${approval.turn}` : "no turn";
+  if (approval.pending) {
+    approvalStatus.textContent = `Pending on ${turnLabel}: ${approval.reason}`;
+    approveButton.classList.remove("hidden");
+    denyButton.classList.remove("hidden");
+    nextTurnButton.classList.add("hidden");
+    resolveButton.classList.add("hidden");
+  } else if (approval.status === "approved") {
+    approvalStatus.textContent = `Approved for ${turnLabel}. ${approval.note || ""}`.trim();
+    approveButton.classList.add("hidden");
+    denyButton.classList.add("hidden");
+  } else if (approval.status === "denied") {
+    approvalStatus.textContent = `Denied for ${turnLabel}. ${approval.note || ""}`.trim();
+    approveButton.classList.add("hidden");
+    denyButton.classList.add("hidden");
+  } else {
+    approvalStatus.textContent = "No approval required yet.";
+    approveButton.classList.add("hidden");
+    denyButton.classList.add("hidden");
+  }
 }
 
 function renderAttribution() {
@@ -215,11 +323,15 @@ async function startSession() {
   state.tools = 0;
   state.controlPlane = data.control_plane || null;
   state.attribution = null;
+  state.approval = data.approval || null;
+  state.drilldown = null;
   updateMetrics();
   updateStatusList();
   renderControlPlane();
   renderAttachments();
   renderAttribution();
+  renderPolicyResourceDrilldown();
+  renderApproval();
 
   workspace.classList.remove("hidden");
   resolutionOutput.textContent = "Resolve the case to generate the final summary.";
@@ -371,12 +483,22 @@ function runTurn(turnNumber) {
     appendControlPlaneLine(`Governance error: ${data.message}`, "security", "error");
   });
 
+  source.addEventListener("approval_status", (event) => {
+    const data = JSON.parse(event.data);
+    state.approval = data;
+    renderApproval();
+    appendActionLine(`Approval required on turn ${data.turn}: ${data.reason}`, "governance", "approval");
+  });
+
   source.addEventListener("turn_end", () => {
     source.close();
     updateStatusList();
     renderControlPlane();
+    renderPolicyResourceDrilldown();
     refreshAttribution();
-    if (turnNumber < state.totalTurns) {
+    if (state.approval?.pending) {
+      renderApproval();
+    } else if (turnNumber < state.totalTurns) {
       nextTurnButton.classList.remove("hidden");
     } else {
       resolveButton.classList.remove("hidden");
@@ -385,21 +507,66 @@ function runTurn(turnNumber) {
 }
 
 async function resolveCase() {
+  if (state.approval?.pending) {
+    approvalStatus.textContent = "Approve or deny the pending action before resolving the case.";
+    return;
+  }
   resolveButton.disabled = true;
   resolveButton.textContent = "Resolving...";
   const response = await fetch(`/api/session/${state.sessionId}/resolve`, { method: "POST" });
   const data = await response.json();
+  if (!response.ok) {
+    resolutionOutput.textContent = data.error || "Resolution failed.";
+    if (data.approval) {
+      state.approval = data.approval;
+      renderApproval();
+    }
+    resolveButton.disabled = false;
+    resolveButton.textContent = "Resolve Case";
+    return;
+  }
   resolutionOutput.textContent = data.content || JSON.stringify(data, null, 2);
   if (data.control_plane) {
     state.controlPlane = data.control_plane;
     renderControlPlane();
+    renderPolicyResourceDrilldown();
     if (data.control_plane.report?.summary) {
       appendControlPlaneLine(`Governance report: ${data.control_plane.report.summary}`, "governance", "report");
     }
   }
+  if (data.approval) {
+    state.approval = data.approval;
+    renderApproval();
+  }
   await refreshAttribution();
   resolveButton.disabled = false;
   resolveButton.textContent = "Resolve Case";
+}
+
+async function submitApproval(action) {
+  if (!state.sessionId) return;
+  const response = await fetch(`/api/session/${state.sessionId}/approval`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, note: approvalNote.value }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    approvalStatus.textContent = data.error || "Approval update failed.";
+    return;
+  }
+  state.approval = data;
+  renderApproval();
+  appendActionLine(
+    `${action === "approve" ? "Approved" : "Denied"} action for turn ${data.turn}.`,
+    "governance",
+    "approval",
+  );
+  if (state.currentTurn < state.totalTurns) {
+    nextTurnButton.classList.remove("hidden");
+  } else {
+    resolveButton.classList.remove("hidden");
+  }
 }
 
 bootstrap.cases.forEach((caseData) => {
@@ -418,6 +585,8 @@ updateStatusList();
 renderControlPlane();
 renderAttachments();
 renderAttribution();
+renderPolicyResourceDrilldown();
+renderApproval();
 
 caseSelect.addEventListener("change", () => {
   state.caseData = bootstrap.cases.find((item) => item.id === caseSelect.value);
@@ -429,3 +598,5 @@ caseSelect.addEventListener("change", () => {
 startButton.addEventListener("click", startSession);
 nextTurnButton.addEventListener("click", () => runTurn(state.currentTurn + 1));
 resolveButton.addEventListener("click", resolveCase);
+approveButton.addEventListener("click", () => submitApproval("approve"));
+denyButton.addEventListener("click", () => submitApproval("deny"));

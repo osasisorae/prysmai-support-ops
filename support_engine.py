@@ -708,6 +708,7 @@ def init_control_plane_session(
         "decisions": [],
         "behavior_checks": [],
         "code_scans": [],
+        "resource_snapshots": {},
         "report": {},
         "errors": [],
     }
@@ -753,6 +754,13 @@ def init_control_plane_session(
         state["governance_session_id"] = started.get("session_id")
         if started.get("policies"):
             state["policies"] = started["policies"]
+        if state["governance_session_id"]:
+            try:
+                state["resource_snapshots"]["session_status"] = mcp.get_session_status(
+                    state["governance_session_id"]
+                )
+            except Exception as exc:
+                state["errors"].append(f"get_session_status failed: {exc}")
         state["enabled"] = True
     except Exception as exc:
         state["errors"].append(f"governance setup failed: {exc}")
@@ -776,6 +784,7 @@ def serialize_control_plane_state(state: Optional[dict[str, Any]]) -> dict[str, 
         "decisions": list(state.get("decisions", [])),
         "behavior_checks": list(state.get("behavior_checks", [])),
         "code_scans": list(state.get("code_scans", [])),
+        "resource_snapshots": dict(state.get("resource_snapshots", {})),
         "report": dict(state.get("report", {})),
         "errors": list(state.get("errors", [])),
     }
@@ -1424,6 +1433,15 @@ def resolve_case(
                 files_modified=["automations/refund_guard.py"] if control_plane_state.get("code_scans") else None,
             )
             control_plane_state["report"] = _serialize_governance_report(report)
+            if mcp and control_plane_state.get("governance_session_id"):
+                try:
+                    control_plane_state.setdefault("resource_snapshots", {})["session_report"] = (
+                        mcp.get_session_report(control_plane_state["governance_session_id"])
+                    )
+                except Exception as exc:
+                    control_plane_state.setdefault("errors", []).append(
+                        f"get_session_report failed: {exc}"
+                    )
         except Exception as exc:
             control_plane_state.setdefault("errors", []).append(f"governance end failed: {exc}")
         finally:

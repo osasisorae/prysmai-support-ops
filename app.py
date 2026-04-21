@@ -61,6 +61,71 @@ except AssertionError:
 sessions: dict[str, dict] = {}
 
 
+def _default_approval_state() -> dict:
+    return {
+        "status": "not_required",
+        "pending": False,
+        "turn": None,
+        "tool_name": None,
+        "reason": "",
+        "reviewer_decision": None,
+        "resolution": None,
+        "note": "",
+        "history": [],
+    }
+
+
+def _build_approval_state(
+    session: dict,
+    *,
+    turn_num: int,
+    reviewer_decision: str | None,
+    tool_name: str | None,
+    tool_status: str | None,
+    attack: bool,
+) -> dict:
+    current = session.get("approval") or _default_approval_state()
+
+    needs_review = (
+        not attack
+        and (
+            reviewer_decision in {"ESCALATE", "DENY"}
+            or tool_status in {"queued", "manual_review"}
+        )
+    )
+    if not needs_review:
+        return current
+
+    reason_parts = []
+    if reviewer_decision in {"ESCALATE", "DENY"}:
+        reason_parts.append(f"Reviewer decision: {reviewer_decision}")
+    if tool_status in {"queued", "manual_review"}:
+        reason_parts.append(f"Tool status: {tool_status}")
+
+    state = {
+        "status": "pending",
+        "pending": True,
+        "turn": turn_num,
+        "tool_name": tool_name,
+        "reason": " | ".join(reason_parts) or "Manual approval required for this action.",
+        "reviewer_decision": reviewer_decision,
+        "resolution": None,
+        "note": "",
+        "history": list(current.get("history", [])),
+    }
+    state["history"].append(
+        {
+            "turn": turn_num,
+            "status": "pending",
+            "tool_name": tool_name,
+            "reviewer_decision": reviewer_decision,
+            "reason": state["reason"],
+        }
+    )
+    session["approval"] = state
+    return state
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     bootstrap = {
@@ -112,6 +177,7 @@ async def start_session(request: Request):
         "turn_records": [],
         "action_log": [],
         "control_plane": control_plane,
+        "approval": _default_approval_state(),
     }
 
     return {
@@ -123,6 +189,7 @@ async def start_session(request: Request):
         "model_config": model_config,
         "slot_models": slot_models,
         "control_plane": serialize_control_plane_state(control_plane),
+        "approval": sessions[session_id]["approval"],
     }
 
 
@@ -142,6 +209,7 @@ async def stream_turn(session_id: str, turn_num: int):
             "agent_blocked": False,
             "reviewer_blocked": False,
             "tools": [],
+            "decision": None,
         }
 
         for chunk in run_support_turn_streaming(
@@ -172,10 +240,30 @@ async def stream_turn(session_id: str, turn_num: int):
                 session["action_log"].append({"turn": turn_num, **chunk})
 
             if event_type == "turn_end":
+                turn_record["decision"] = chunk.get("decision")
                 session["agent_history"].append(turn_record["agent"] or chunk.get("agent_preview", ""))
                 session["reviewer_history"].append(turn_record["reviewer"] or chunk.get("reviewer_preview", ""))
                 session["turn_records"].append(turn_record)
                 session["current_turn"] = turn_num
+                tool_result = next(
+                    (item for item in reversed(turn_record["tools"]) if item.get("type") == "tool_result"),
+                    {},
+                )
+                approval_state = _build_approval_state(
+                    session,
+                    turn_num=turn_num,
+                    reviewer_decision=chunk.get("decision"),
+                    tool_name=tool_result.get("tool"),
+                    tool_status=tool_result.get("status"),
+                    attack=bool(chunk.get("is_attack")),
+                )
+                if approval_state.get("pending"):
+                    approval_event = {
+                        "type": "approval_status",
+                        **approval_state,
+                    }
+                    session["action_log"].append({"turn": turn_num, **approval_event})
+                    yield {"event": "approval_status", "data": json.dumps(approval_event)}
 
             yield {"event": event_type, "data": json.dumps(chunk)}
 
@@ -187,6 +275,14 @@ async def resolve_session(session_id: str):
     session = sessions.get(session_id)
     if not session:
         return JSONResponse({"error": "Session not found"}, status_code=404)
+    if session.get("approval", {}).get("pending"):
+        return JSONResponse(
+            {
+                "error": "Approval required before resolution",
+                "approval": session.get("approval"),
+            },
+            status_code=409,
+        )
 
     result = resolve_case(
         case_data=session["case"],
@@ -199,6 +295,7 @@ async def resolve_session(session_id: str):
     )
     session["status"] = "complete"
     session["action_log"].append({"turn": "resolve", "type": "resolved"})
+    result["approval"] = session.get("approval")
     return result
 
 
@@ -218,6 +315,7 @@ async def session_status(session_id: str):
         "actions_logged": len(session["action_log"]),
         "turns_completed": len(session["turn_records"]),
         "control_plane": serialize_control_plane_state(session.get("control_plane")),
+        "approval": session.get("approval", _default_approval_state()),
     }
 
 
@@ -237,6 +335,48 @@ async def session_attribution(session_id: str):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
     return get_session_attribution(session.get("control_plane"))
+
+
+@app.post("/api/session/{session_id}/approval")
+async def session_approval(session_id: str, request: Request):
+    session = sessions.get(session_id)
+    if not session:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+    approval = session.get("approval") or _default_approval_state()
+    body = await request.json()
+    action = str(body.get("action", "")).strip().lower()
+    note = str(body.get("note", "")).strip()
+
+    if action not in {"approve", "deny"}:
+        return JSONResponse({"error": "Action must be approve or deny"}, status_code=400)
+    if not approval.get("pending"):
+        return JSONResponse({"error": "No approval is currently pending", "approval": approval}, status_code=409)
+
+    approval["status"] = "approved" if action == "approve" else "denied"
+    approval["pending"] = False
+    approval["resolution"] = action
+    approval["note"] = note
+    approval.setdefault("history", []).append(
+        {
+            "turn": approval.get("turn"),
+            "status": approval["status"],
+            "tool_name": approval.get("tool_name"),
+            "reviewer_decision": approval.get("reviewer_decision"),
+            "reason": approval.get("reason"),
+            "note": note,
+        }
+    )
+    session["approval"] = approval
+    session["action_log"].append(
+        {
+            "turn": approval.get("turn"),
+            "type": "approval_decision",
+            "status": approval["status"],
+            "note": note,
+        }
+    )
+    return approval
 
 
 if __name__ == "__main__":

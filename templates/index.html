@@ -81,6 +81,20 @@
                     <h3>Control Plane</h3>
                     <ul id="control-plane-list" class="status-list"></ul>
                 </article>
+                <article class="panel large">
+                    <h3>Policies + Resources</h3>
+                    <div class="drilldown-grid">
+                        <div>
+                            <h4>Policies</h4>
+                            <ul id="policy-list" class="timeline"></ul>
+                        </div>
+                        <div>
+                            <h4>Resources</h4>
+                            <ul id="resource-list" class="timeline"></ul>
+                        </div>
+                    </div>
+                    <pre id="drilldown-output" class="stream-output muted">Select a policy or resource entry to inspect details.</pre>
+                </article>
                 <article class="panel stream-panel">
                     <h3 id="primary-heading">Primary Agent</h3>
                     <p id="agent-status" class="stream-status">Waiting</p>
@@ -98,6 +112,15 @@
                 <article class="panel">
                     <h3>Resolution</h3>
                     <pre id="resolution-output" class="stream-output muted">Resolve the case to generate the final summary.</pre>
+                </article>
+                <article class="panel">
+                    <h3>Approval Gate</h3>
+                    <p id="approval-status" class="muted">No approval required yet.</p>
+                    <textarea id="approval-note" class="note-input" rows="4" placeholder="Optional approval note"></textarea>
+                    <div class="approval-actions">
+                        <button id="approve-button" class="primary-button hidden">Approve Action</button>
+                        <button id="deny-button" class="secondary-button hidden">Deny Action</button>
+                    </div>
                 </article>
                 <article class="panel large">
                     <h3>Attribution View</h3>

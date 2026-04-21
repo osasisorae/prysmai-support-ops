@@ -11,6 +11,8 @@ It is designed to exercise the parts of Prysm that matter in production:
 - MCP connection discovery and policy/resource reads
 - governance session lifecycle for the full case
 - explicit recording of tool calls, file reads/writes, and reviewer decisions
+- policy/resource drill-down in the operator UI
+- explicit human approval gate for risky actions
 - behavioral checks during the workflow
 - code scanning against a risky automation snippet
 - prompt injection blocking on hostile customer messages
@@ -53,6 +55,8 @@ The UI also shows a control-plane pane with:
 - recorded traces
 - behavior checks
 - code-scan findings
+
+Risky turns can also enter an approval gate. When the reviewer escalates or a tool lands in a queued/manual-review state, the operator must explicitly approve or deny the action before the case can continue to resolution.
 
 ## Run Locally
 

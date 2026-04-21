@@ -27,6 +27,7 @@ def _fake_control_plane():
         "decisions": [],
         "behavior_checks": [],
         "code_scans": [],
+        "resource_snapshots": {"session_status": {"session_id": "gov-test-1", "status": "active"}},
         "report": {},
         "errors": [],
     }
@@ -70,6 +71,8 @@ def test_start_session_and_status_flow(monkeypatch):
     assert data["session_id"]
     assert data["slot_models"]["agent"]["id"] == payload["model_config"]["primary"]
     assert data["control_plane"]["governance_session_id"] == "gov-test-1"
+    assert data["control_plane"]["resource_snapshots"]["session_status"]["status"] == "active"
+    assert data["approval"]["status"] == "not_required"
     assert len(data["case"]["attachments"]) >= 1
 
     status = client.get(f"/api/session/{data['session_id']}/status")
@@ -132,18 +135,18 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
             "threat_level": "low",
             "threat_score": 5,
         }
-        yield {"type": "tool_result", "tool": "lookup_customer", "status": "success", "summary": "Loaded record."}
+        yield {"type": "tool_result", "tool": "draft_refund", "status": "queued", "summary": "Queued refund draft."}
         yield {
             "type": "model_start",
             "model": "reviewer",
             "model_id": "llama-3.1-8b-instant",
             "model_name": "Llama 3.1 8B",
         }
-        yield {"type": "token", "model": "reviewer", "content": "Decision: APPROVE"}
+        yield {"type": "token", "model": "reviewer", "content": "Decision: ESCALATE"}
         yield {
             "type": "done",
             "model": "reviewer",
-            "content": "Decision: APPROVE",
+            "content": "Decision: ESCALATE",
             "blocked": False,
             "trace_id": "trace-reviewer-1",
             "threat_level": "low",
@@ -154,9 +157,11 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
             "type": "turn_end",
             "turn": turn,
             "agent_preview": "We can help.",
-            "reviewer_preview": "Decision: APPROVE",
+            "reviewer_preview": "Decision: ESCALATE",
             "agent_blocked": False,
             "reviewer_blocked": False,
+            "decision": "ESCALATE",
+            "is_attack": False,
         }
 
     def fake_resolve_case(**kwargs):
@@ -172,13 +177,25 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
                 "tool_calls": [],
                 "file_events": [],
                 "attachments_indexed": [{"name": "invoice-diff.csv"}],
-                "decisions": [],
+                "decisions": [{"turn": 1, "decision": "ESCALATE"}],
                 "policies": [],
                 "resources": [],
+                "resource_snapshots": {"session_report": {"summary": "report"}},
                 "report": {"behavior_score": 95, "summary": "Session completed cleanly."},
                 "errors": [],
                 "mcp_url": "https://prysmai.example/api/mcp",
                 "connection": {"server_url": "https://prysmai.example/api/mcp", "transport": "streamable_http"},
+            },
+            "approval": {
+                "status": "approved",
+                "pending": False,
+                "turn": 1,
+                "tool_name": "draft_refund",
+                "reason": "Reviewer decision: ESCALATE | Tool status: queued",
+                "reviewer_decision": "ESCALATE",
+                "resolution": "approve",
+                "note": "manager approved",
+                "history": [],
             },
         }
 
@@ -194,20 +211,36 @@ def test_turn_stream_and_resolve_flow(monkeypatch):
     assert response.status_code == 200
     assert "event: turn_start" in body
     assert "event: done" in body
-    assert "Loaded record." in body
+    assert "event: approval_status" in body
+    assert "Queued refund draft." in body
 
     status = client.get(f"/api/session/{session_id}/status")
     assert status.status_code == 200, status.text
     status_data = status.json()
     assert status_data["current_turn"] == 1
-    assert status_data["actions_logged"] == 3
+    assert status_data["actions_logged"] == 4
     assert status_data["turns_completed"] == 1
     assert status_data["control_plane"]["governance_session_id"] == "gov-test-1"
+    assert status_data["approval"]["pending"] is True
+    assert status_data["approval"]["reviewer_decision"] == "ESCALATE"
+
+    resolve = client.post(f"/api/session/{session_id}/resolve")
+    assert resolve.status_code == 409, resolve.text
+    assert resolve.json()["approval"]["pending"] is True
+
+    approve = client.post(
+        f"/api/session/{session_id}/approval",
+        json={"action": "approve", "note": "manager approved"},
+    )
+    assert approve.status_code == 200, approve.text
+    assert approve.json()["status"] == "approved"
+    assert approve.json()["pending"] is False
 
     resolve = client.post(f"/api/session/{session_id}/resolve")
     assert resolve.status_code == 200, resolve.text
     assert resolve.json()["content"] == "Case resolved safely."
     assert resolve.json()["control_plane"]["report"]["behavior_score"] == 95
+    assert resolve.json()["approval"]["status"] == "approved"
 
     attribution = client.get(f"/api/session/{session_id}/attribution")
     assert attribution.status_code == 200, attribution.text
