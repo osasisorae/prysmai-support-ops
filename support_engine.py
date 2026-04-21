@@ -184,12 +184,52 @@ except ModuleNotFoundError:
 
 load_dotenv()
 
-prysm = PrysmClient(
-    prysm_key=os.getenv("PRYSM_API_KEY") or "sk-prysm-example-placeholder",
-    base_url=os.getenv("PRYSM_BASE_URL", "https://prysmai.io/api/v1"),
+PRYSM_API_KEY = os.getenv("PRYSM_API_KEY") or "sk-prysm-example-placeholder"
+PRYSM_PROXY_BASE_URL = os.getenv("PRYSM_BASE_URL", "https://prysmai.io/api/v1")
+
+
+def _derive_control_plane_base_url() -> str:
+    explicit = os.getenv("PRYSM_CONTROL_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+
+    backend = os.getenv("PRYSM_BACKEND_URL", "").strip()
+    if backend:
+        return f"{backend.rstrip('/')}/v1"
+
+    proxy = PRYSM_PROXY_BASE_URL.rstrip("/")
+    if proxy.startswith("https://prysmai.io/"):
+        return proxy.replace("https://prysmai.io/", "https://api.prysmai.io/", 1)
+    return proxy
+
+
+def _humanize_control_plane_error(exc: Exception) -> str:
+    message = str(exc)
+    lowered = message.lower()
+    if "invalid token" in lowered or "401" in lowered:
+        return (
+            "Governance/MCP rejected the configured PRYSM_API_KEY. "
+            "This key may be valid for proxy traffic but not authorized for control-plane endpoints."
+        )
+    if "read_resource" in lowered or "list_resources" in lowered:
+        return (
+            "The installed prysmai SDK version does not fully support MCP resource reads. "
+            "Policy/resource drill-down will stay limited until the SDK exposes those helpers."
+        )
+    return message
+
+
+proxy_prysm = PrysmClient(
+    prysm_key=PRYSM_API_KEY,
+    base_url=PRYSM_PROXY_BASE_URL,
     timeout=120.0,
 )
-client = prysm.llm()
+control_prysm = PrysmClient(
+    prysm_key=PRYSM_API_KEY,
+    base_url=_derive_control_plane_base_url(),
+    timeout=120.0,
+)
+client = proxy_prysm.llm()
 
 MODEL_CATALOG = {
     "gpt-4o-mini": {
@@ -693,6 +733,8 @@ def init_control_plane_session(
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "enabled": False,
+        "proxy_base_url": PRYSM_PROXY_BASE_URL,
+        "control_base_url": _derive_control_plane_base_url(),
         "mcp_url": None,
         "connection": {},
         "policies": [],
@@ -714,7 +756,7 @@ def init_control_plane_session(
     }
 
     try:
-        mcp = prysm.mcp(timeout=30.0)
+        mcp = control_prysm.mcp(timeout=30.0)
         state["mcp_url"] = getattr(mcp, "mcp_url", None)
         try:
             cfg = mcp.connection_config()
@@ -723,17 +765,17 @@ def init_control_plane_session(
                 "transport": getattr(cfg, "transport", "streamable_http"),
             }
         except Exception as exc:
-            state["errors"].append(f"connection_config failed: {exc}")
+            state["errors"].append(f"connection_config failed: {_humanize_control_plane_error(exc)}")
 
         try:
             state["policies"] = list(mcp.list_policies() or [])
         except Exception as exc:
-            state["errors"].append(f"list_policies failed: {exc}")
+            state["errors"].append(f"list_policies failed: {_humanize_control_plane_error(exc)}")
 
         try:
             state["resources"] = list(mcp.list_resources() or [])[:6]
         except Exception as exc:
-            state["errors"].append(f"list_resources failed: {exc}")
+            state["errors"].append(f"list_resources failed: {_humanize_control_plane_error(exc)}")
 
         governance = mcp.governance_session(
             task=f"Handle support case {case_data['id']} safely.",
@@ -760,10 +802,10 @@ def init_control_plane_session(
                     state["governance_session_id"]
                 )
             except Exception as exc:
-                state["errors"].append(f"get_session_status failed: {exc}")
+                state["errors"].append(f"get_session_status failed: {_humanize_control_plane_error(exc)}")
         state["enabled"] = True
     except Exception as exc:
-        state["errors"].append(f"governance setup failed: {exc}")
+        state["errors"].append(f"governance setup failed: {_humanize_control_plane_error(exc)}")
 
     return state
 
@@ -772,6 +814,8 @@ def serialize_control_plane_state(state: Optional[dict[str, Any]]) -> dict[str, 
     state = state or {}
     return {
         "enabled": bool(state.get("enabled")),
+        "proxy_base_url": state.get("proxy_base_url"),
+        "control_base_url": state.get("control_base_url"),
         "mcp_url": state.get("mcp_url"),
         "connection": state.get("connection", {}),
         "governance_session_id": state.get("governance_session_id"),
@@ -1009,9 +1053,9 @@ def call_model_streaming(
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else latency_ms
-        trace_id = getattr(prysm, "last_trace_id", None)
-        threat_level = getattr(prysm, "last_threat_level", None)
-        threat_score = getattr(prysm, "last_threat_score", None)
+        trace_id = getattr(proxy_prysm, "last_trace_id", None)
+        threat_level = getattr(proxy_prysm, "last_threat_level", None)
+        threat_score = getattr(proxy_prysm, "last_threat_score", None)
         yield {
             "type": "done",
             "model": slot,
@@ -1029,9 +1073,9 @@ def call_model_streaming(
     except Exception as exc:
         latency_ms = (time.time() - start_time) * 1000
         error_str = str(exc)
-        trace_id = getattr(prysm, "last_trace_id", None)
-        threat_level = getattr(prysm, "last_threat_level", None)
-        threat_score = getattr(prysm, "last_threat_score", None)
+        trace_id = getattr(proxy_prysm, "last_trace_id", None)
+        threat_level = getattr(proxy_prysm, "last_threat_level", None)
+        threat_score = getattr(proxy_prysm, "last_threat_score", None)
         if "security_error" in error_str or "security policy" in error_str or "blocked" in error_str.lower():
             blocked_msg = (
                 "[SECURITY BLOCKED] PrysmAI detected a hostile support-ops prompt and blocked the request "
@@ -1416,9 +1460,9 @@ def resolve_case(
             "turn": TOTAL_TURNS + 1,
             "slot": "resolver",
             "model_id": result.get("model_id"),
-            "trace_id": getattr(prysm, "last_trace_id", None),
-            "threat_level": getattr(prysm, "last_threat_level", None),
-            "threat_score": getattr(prysm, "last_threat_score", None),
+            "trace_id": getattr(proxy_prysm, "last_trace_id", None),
+            "threat_level": getattr(proxy_prysm, "last_threat_level", None),
+            "threat_score": getattr(proxy_prysm, "last_threat_score", None),
             "blocked": False,
         }
     )

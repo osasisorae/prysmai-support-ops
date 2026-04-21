@@ -80,9 +80,12 @@ Optional:
 
 - `PRYSM_BASE_URL`
 - `PRYSM_BACKEND_URL`
+- `PRYSM_CONTROL_BASE_URL`
 - `PRYSM_USER_BEARER_TOKEN`
 
 The app uses a placeholder key if none is set so the module can still import during local testing, but live model calls require a real Prysm key.
+
+By default the app uses `PRYSM_BASE_URL` for proxy-routed model traffic and derives a separate control-plane host from `PRYSM_BACKEND_URL` for governance, MCP, and attribution calls. If your deployment splits those hosts in a different way, set `PRYSM_CONTROL_BASE_URL` explicitly.
 
 If `PRYSM_USER_BEARER_TOKEN` is set, the app will also call Prysm's live `/traces/{trace_id}/attribution` endpoint for the traces generated during the session. Without it, the Attribution View still shows the recorded trace inventory but explains that live attribution is unavailable.
 
